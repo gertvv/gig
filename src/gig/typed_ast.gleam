@@ -2,6 +2,7 @@ import gig/call_graph
 import gig/graph
 import glance.{Span} as g
 import gleam/bit_array
+import gleam/order
 import listx
 
 import gleam/dict.{type Dict}
@@ -27,14 +28,14 @@ pub const string_type = NamedType("String", builtin, [])
 
 pub const bit_array_type = NamedType("BitArray", builtin, [])
 
-pub type Ref {
-  Ref(id: Int)
+pub type TypeVarId {
+  TypeVarId(module_name: String, id: Int)
 }
 
 // TODO do we need unbound? what if unbound is just a missing key in the map
 pub type TypeVar {
   Bound(Type)
-  Unbound(id: Int)
+  Unbound(TypeVarId)
 }
 
 pub type Definition(definition) {
@@ -302,12 +303,11 @@ pub type Type {
   NamedType(name: String, module: String, parameters: List(Type))
   TupleType(elements: List(Type))
   FunctionType(parameters: List(Type), return: Type)
-  VariableType(ref: Ref)
+  VariableType(ref: TypeVarId)
 }
 
 pub type Poly {
-  // TODO should vars be List(TypeVarRef) ??
-  Poly(vars: List(Int), typ: Type)
+  Poly(vars: List(TypeVarId), typ: Type)
 }
 
 pub type Annotation {
@@ -352,7 +352,7 @@ pub type Context {
     current_module: String,
     current_definition: String,
     current_span: Span,
-    type_vars: Dict(Ref, TypeVar),
+    type_vars: Dict(TypeVarId, TypeVar),
     modules: Dict(String, Module),
     type_uid: Int,
     temp_uid: Int,
@@ -536,7 +536,7 @@ pub fn infer_module(
         c.current_module,
         custom.name,
       ))
-      let param_types = list.map(poly.vars, fn(x) { VariableType(Ref(x)) })
+      let param_types = list.map(poly.vars, fn(x) { VariableType(x) })
       let parameters = list.zip(custom.parameters, param_types)
 
       // infer the custom type including variants
@@ -668,8 +668,13 @@ pub fn infer_module(
 fn generalise(c: Context, typ: Type) {
   let tvs =
     list.unique(find_tvs(c, typ))
-    |> list.sort(int.compare)
+    |> list.sort(type_var_id_compare)
   Poly(tvs, typ)
+}
+
+fn type_var_id_compare(a: TypeVarId, b: TypeVarId) -> order.Order {
+  string.compare(a.module_name, b.module_name)
+  |> order.break_tie(int.compare(a.id, b.id))
 }
 
 fn get_current_module(c: Context) -> Module {
@@ -867,9 +872,8 @@ fn infer_alias_type(
       let n = dict.insert(n, name, typ)
       // TODO: does this need wrapping in a result or is it guaranteed to succeed?
       let assert VariableType(ref) = typ
-      #(c, n, [ref.id, ..args])
+      #(c, n, [ref, ..args])
     })
-
   let args = list.reverse(args)
 
   use #(c, aliased) <- result.map(do_infer_annotation(
@@ -1246,8 +1250,8 @@ fn new_temp_var(c: Context) -> #(Context, String) {
 }
 
 fn new_type_var_ref(c: Context) {
-  let ref = Ref(c.type_uid)
-  let type_vars = dict.insert(c.type_vars, ref, Unbound(c.type_uid))
+  let ref = TypeVarId(c.current_module, c.type_uid)
+  let type_vars = dict.insert(c.type_vars, ref, Unbound(ref))
   let typ = VariableType(ref)
   #(Context(..c, type_vars: type_vars, type_uid: c.type_uid + 1), typ)
 }
@@ -2414,15 +2418,15 @@ fn infer_fn(
 }
 
 type PolyEnv =
-  Dict(Int, Type)
+  Dict(TypeVarId, Type)
 
-fn get_type_var(c: Context, var: Ref) {
+fn get_type_var(c: Context, var: TypeVarId) {
   // TODO: guaranteed to succeed?
   let assert Ok(x) = dict.get(c.type_vars, var)
   x
 }
 
-fn set_type_var(c: Context, var: Ref, bind: TypeVar) {
+fn set_type_var(c: Context, var: TypeVarId, bind: TypeVar) {
   Context(..c, type_vars: dict.insert(c.type_vars, var, bind))
 }
 
@@ -2438,7 +2442,7 @@ fn instantiate(c: Context, poly: Poly) -> #(Context, Type) {
   #(c, typ)
 }
 
-fn find_tvs(c: Context, t: Type) -> List(Int) {
+fn find_tvs(c: Context, t: Type) -> List(TypeVarId) {
   case t {
     VariableType(ref) ->
       case get_type_var(c, ref) {
@@ -2522,7 +2526,7 @@ fn unify_arguments(
   list.try_fold(args, c, fn(c, x) { unify(c, x.0, x.1) })
 }
 
-fn occurs(c: Context, id: Int, in: Type) -> #(Context, Bool) {
+fn occurs(c: Context, id: TypeVarId, in: Type) -> #(Context, Bool) {
   case in {
     VariableType(ref) ->
       case get_type_var(c, ref) {
