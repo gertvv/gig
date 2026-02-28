@@ -98,27 +98,39 @@ pub type Module {
 
 type Context {
   Context(
-    module: String,
+    module: t.Module,
     definition: String,
-    // TODO: should only need module interfaces.
-    modules: dict.Dict(String, t.Module),
+    modules: dict.Dict(String, t.ModuleInterface),
   )
 }
 
 pub fn lower_modules(modules: dict.Dict(String, t.Module)) {
   let acc = Module(types: [], functions: [], externals: [])
-  dict.values(modules)
-  |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
-  |> list.fold(acc, fn(acc, module) { lower_module(acc, modules, module) })
-}
 
-fn lower_module(acc: Module, modules, module: t.Module) {
-  let c = Context(module: module.name, definition: "", modules:)
+  let interfaces = dict.map_values(modules, fn(_, m) { t.interface(m) })
 
   // TODO detect what tuples are actually used
   let acc =
     listx.sane_range(10)
     |> list.fold(acc, register_tuple)
+
+  dict.values(modules)
+  |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
+  |> list.fold(acc, fn(acc, module) {
+    lower_module_internal(acc, interfaces, module)
+  })
+}
+
+pub fn lower_module(
+  interfaces: dict.Dict(String, t.ModuleInterface),
+  module: t.Module,
+) {
+  let acc = Module(types: [], functions: [], externals: [])
+  lower_module_internal(acc, interfaces, module)
+}
+
+fn lower_module_internal(acc: Module, modules, module: t.Module) {
+  let c = Context(module: module, definition: "", modules:)
 
   let acc =
     list.fold(module.custom_types, acc, fn(acc, custom) {
@@ -163,7 +175,7 @@ fn lower_module(acc: Module, modules, module: t.Module) {
           ) = external
           let fun = fun.definition
           let typ = map_poly(fun.typ)
-          let module = c.module
+          let module = c.module.name
           let name = fun.name
           let internal_name = get_id(module, name)
           let builtin = list.any(attrs, fn(x) { x.name == "builtin" })
@@ -190,7 +202,7 @@ fn lower_module(acc: Module, modules, module: t.Module) {
 
 fn lower_custom_type(c: Context, custom: t.CustomType) {
   let typ = map_poly(custom.typ)
-  let module = c.module
+  let module = c.module.name
   let name = custom.name
   let id = get_id(module, name)
   let variants =
@@ -214,7 +226,7 @@ fn lower_function(c: Context, def: t.Definition(t.FunctionDefinition)) {
   let c = Context(..c, definition: def.definition.name)
   let function = def.definition
   let typ = map_poly(function.typ)
-  let module = c.module
+  let module = c.module.name
   let name = function.name
   let id = get_id(module, name)
   let parameters = list.map(function.parameters, lower_parameter)
@@ -1167,9 +1179,10 @@ fn lower_pattern_match(
           let subject = lower_expression(c, subject)
           let assert NamedType(custom, _) = subject.typ
           let assert Ok(mod) = dict.get(c.modules, module)
-          let assert Ok(t.Definition(_, custom)) =
+            as { "Module not found: " <> module }
+          let assert Ok(custom) =
             list.find(mod.custom_types, fn(custom_type) {
-              get_id(module, custom_type.definition.name) == custom
+              get_id(module, custom_type.name) == custom
             })
           let variant = get_id(module, constructor)
 
@@ -1204,16 +1217,10 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
         }
       }
     }
-    t.Constant(module:, name:, ..) -> {
+    t.Constant(typ:, module:, name:) -> {
       // TODO: in order for lowering to not require implementation details of
       // other modules, inlining must happen later
-      let assert Ok(mod) = dict.get(c.modules, module)
-      let assert Ok(constant) =
-        list.find(mod.constants, fn(constant) {
-          constant.definition.name == name
-        })
-      // inline the constant
-      lower_expression(c, constant.definition.value)
+      Global(map_type(typ), get_id(module, name))
     }
     t.NegateInt(typ, value) -> {
       let typ = map_type(typ)
@@ -1312,9 +1319,9 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
       let container = lower_expression(c, container)
       let assert NamedType(custom, _) = container.typ
       let assert Ok(module) = dict.get(c.modules, module)
-      let assert Ok(t.Definition(_, custom)) =
+      let assert Ok(custom) =
         list.find(module.custom_types, fn(c) {
-          get_id(module.name, c.definition.name) == custom
+          get_id(module.name, c.name) == custom
         })
       let assert Ok(variant) =
         list.find(custom.variants, fn(v) { v.name == variant })
@@ -1581,7 +1588,7 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
 }
 
 fn current_location(c: Context) {
-  c.module <> "." <> c.definition
+  c.module.name <> "." <> c.definition
 }
 
 fn replace_var(replace: String, with: Exp, in: Exp) -> Exp {
