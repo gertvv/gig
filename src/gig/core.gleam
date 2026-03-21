@@ -77,6 +77,10 @@ pub type Function {
   Function(typ: Poly, id: String, parameters: List(Parameter), body: Exp)
 }
 
+pub type FunctionDeclaration {
+  FunctionDeclaration(typ: Poly, id: String, parameters: List(Parameter))
+}
+
 pub type External {
   External(
     typ: Poly,
@@ -96,40 +100,65 @@ pub type Module {
   )
 }
 
+pub type ModuleInterface {
+  ModuleInterface(types: List(CustomType), functions: List(FunctionDeclaration))
+}
+
 type Context {
   Context(
     module: t.Module,
     definition: String,
-    modules: dict.Dict(String, t.ModuleInterface),
+    modules: dict.Dict(String, ModuleInterface),
   )
 }
 
 pub fn lower_modules(modules: dict.Dict(String, t.Module)) {
   let acc = Module(types: [], functions: [], externals: [])
 
-  let interfaces = dict.map_values(modules, fn(_, m) { t.interface(m) })
-
   // TODO detect what tuples are actually used
   let acc =
     listx.sane_range(10)
     |> list.fold(acc, register_tuple)
 
+  // TODO if a different sort order of modules is used, we will be able to generate
+  // lowered interfaces before generating modules that depend on them
   dict.values(modules)
   |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
-  |> list.fold(acc, fn(acc, module) {
-    lower_module_internal(acc, interfaces, module)
-  })
+  |> list.fold(acc, fn(acc, module) { lower_module_internal(acc, todo, module) })
 }
 
 pub fn lower_module(
-  interfaces: dict.Dict(String, t.ModuleInterface),
+  interfaces: dict.Dict(String, ModuleInterface),
   module: t.Module,
 ) {
   let acc = Module(types: [], functions: [], externals: [])
   lower_module_internal(acc, interfaces, module)
 }
 
-fn lower_module_internal(acc: Module, modules, module: t.Module) {
+pub fn interface(m: Module) -> ModuleInterface {
+  // TODO: filter to only public?
+  ModuleInterface(
+    types: m.types,
+    functions: list.append(
+      list.map(m.functions, fn(f) {
+        FunctionDeclaration(typ: f.typ, id: f.id, parameters: f.parameters)
+      }),
+      list.map(m.externals, fn(f) {
+        FunctionDeclaration(
+          typ: f.typ,
+          id: get_id(f.module, f.internal_name),
+          parameters: f.parameters,
+        )
+      }),
+    ),
+  )
+}
+
+fn lower_module_internal(
+  acc: Module,
+  modules: dict.Dict(String, ModuleInterface),
+  module: t.Module,
+) {
   let c = Context(module: module, definition: "", modules:)
 
   let acc =
@@ -1181,9 +1210,7 @@ fn lower_pattern_match(
           let assert Ok(mod) = dict.get(c.modules, module)
             as { "Module not found: " <> module }
           let assert Ok(custom) =
-            list.find(mod.custom_types, fn(custom_type) {
-              get_id(module, custom_type.name) == custom
-            })
+            list.find(mod.types, fn(custom_type) { custom_type.id == custom })
           let variant = get_id(module, constructor)
 
           let variant_match = case custom.variants {
@@ -1319,16 +1346,11 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
       let container = lower_expression(c, container)
       let assert NamedType(custom, _) = container.typ
       let assert Ok(module) = dict.get(c.modules, module)
-      let assert Ok(custom) =
-        list.find(module.custom_types, fn(c) {
-          get_id(module.name, c.name) == custom
-        })
+      let assert Ok(custom) = list.find(module.types, fn(c) { c.id == custom })
       let assert Ok(variant) =
-        list.find(custom.variants, fn(v) { v.name == variant })
+        list.find(custom.variants, fn(v) { v.id == variant })
       let assert [field, ..] = list.drop(variant.fields, index)
-      let field = option.unwrap(field.label, "")
-      let field = gen_names.get_field_name(field, index)
-      Op(typ, FieldAccess(variant.name, field), [container])
+      Op(typ, FieldAccess(variant.id, field.name), [container])
     }
     t.Call(typ, function, args) -> {
       let typ = map_type(typ)
