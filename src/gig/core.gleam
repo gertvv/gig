@@ -163,14 +163,16 @@ fn lower_module_internal(
 
   let acc =
     list.fold(module.custom_types, acc, fn(acc, custom) {
-      case custom.definition.variants {
-        // no variants is considered external so we don't register it
-        [] -> acc
-        _ -> {
-          let custom = lower_custom_type(c, custom.definition)
-          Module(..acc, types: [custom, ..acc.types])
-        }
-      }
+      let custom = lower_custom_type(c, custom.definition)
+      Module(..acc, types: [custom, ..acc.types])
+      // case custom.definition.variants {
+      //   // no variants is considered external so we don't register it
+      //   [] -> acc
+      //   _ -> {
+      //     let custom = lower_custom_type(c, custom.definition)
+      //     Module(..acc, types: [custom, ..acc.types])
+      //   }
+      // }
     })
 
   // create type related builtin functions
@@ -180,6 +182,10 @@ fn lower_module_internal(
         register_variant_functions(acc, module.name, variant)
       })
     })
+
+  // ensure module-local types are available
+  let c =
+    Context(..c, modules: dict.insert(modules, module.name, interface(acc)))
 
   let acc =
     list.fold(module.functions, acc, fn(acc, fun) {
@@ -1341,12 +1347,13 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
       let body = Call(typ, Global(constructor_typ, constructor), fields)
       Let(body.typ, subject_name, record, body)
     }
-    t.FieldAccess(typ, container, module, variant, _label, index) -> {
+    t.FieldAccess(typ, container, module_name, variant, _label, index) -> {
       let typ = map_type(typ)
       let container = lower_expression(c, container)
       let assert NamedType(custom, _) = container.typ
-      let assert Ok(module) = dict.get(c.modules, module)
+      let assert Ok(module) = dict.get(c.modules, module_name)
       let assert Ok(custom) = list.find(module.types, fn(c) { c.id == custom })
+      let variant = get_id(module_name, variant)
       let assert Ok(variant) =
         list.find(custom.variants, fn(v) { v.id == variant })
       let assert [field, ..] = list.drop(variant.fields, index)
