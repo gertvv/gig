@@ -117,7 +117,9 @@ pub fn compile(gleam_file_name: String, options: CompileOptions) {
       module_id,
     )
 
-  let core = core.lower_modules(dict.map_values(typed, fn(_, p) { p.0 }))
+  let core =
+    core.lower_modules(dict.map_values(typed, fn(_, p) { p.0 }))
+    |> core.merge_modules
 
   case options.headers {
     True -> generate_headers_only(core, sources)

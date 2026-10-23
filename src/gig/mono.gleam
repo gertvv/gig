@@ -1,4 +1,5 @@
 import gig/core as t
+import gig/gen_names
 import gleam/dict
 import gleam/io
 import gleam/list
@@ -455,7 +456,7 @@ fn typed_to_mono_exp(
       let args = list.reverse(args)
       let typ = sub_type(sub, typ)
       let op = case op {
-        t.FieldAccess(variant:, field:) -> {
+        t.FieldAccess(variant:, index:) -> {
           let assert [arg, ..] = args
           let assert NamedType(name, _) = arg.typ
           let assert Ok(custom) = dict.get(c.in_types, name)
@@ -463,7 +464,17 @@ fn typed_to_mono_exp(
             [_] -> StructAccess
             _ -> TaggedUnionAccess
           }
-          FieldAccess(kind:, variant:, field:)
+          let assert Ok(t.Variant(fields:, display_name: variant, ..)) =
+            list.find(custom.variants, fn(v) {
+              // TODO: for tuple indexing, variant is set to "#", but the variant.id to "TupleN"
+              v.id == variant || variant == "#"
+            })
+          let assert Ok(field) = list.drop(fields, index) |> list.first
+          FieldAccess(
+            kind:,
+            variant:,
+            field: gen_names.field_name(field.name, index),
+          )
         }
         t.VariantCheck(variant:) -> VariantCheck(variant:)
       }

@@ -1,6 +1,7 @@
 import gig/gen_names.{get_id}
 import glance_typed as t
 import gleam/dict
+import gleam/io
 import gleam/result
 import gleam/string
 import glexer
@@ -41,7 +42,7 @@ pub type LiteralKind {
 }
 
 pub type Op {
-  FieldAccess(variant: String, field: String)
+  FieldAccess(variant: String, index: Int)
   VariantCheck(variant: String)
 }
 
@@ -77,6 +78,10 @@ pub type Function {
   Function(typ: Poly, id: String, parameters: List(Parameter), body: Exp)
 }
 
+pub type FunctionDeclaration {
+  FunctionDeclaration(typ: Poly, id: String, parameters: List(Parameter))
+}
+
 pub type External {
   External(
     typ: Poly,
@@ -88,32 +93,90 @@ pub type External {
   )
 }
 
+pub type Constant {
+  Constant(typ: Poly, id: String, value: Exp)
+}
+
+pub type ConstantDeclaration {
+  ConstantDeclaration(typ: Poly, id: String)
+}
+
 pub type Module {
   Module(
     types: List(CustomType),
     functions: List(Function),
     externals: List(External),
+    constants: List(Constant),
+  )
+}
+
+pub type ModuleInterface {
+  ModuleInterface(
+    types: List(CustomType),
+    functions: List(FunctionDeclaration),
+    constants: List(ConstantDeclaration),
   )
 }
 
 type Context {
   Context(
-    module: String,
+    module: t.Module,
     definition: String,
-    // TODO: should only need module interfaces.
-    modules: dict.Dict(String, t.Module),
+    interfaces: dict.Dict(String, ModuleInterface),
   )
 }
 
-pub fn lower_modules(modules: dict.Dict(String, t.Module)) {
-  let acc = Module(types: [], functions: [], externals: [])
-  dict.values(modules)
-  |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
-  |> list.fold(acc, fn(acc, module) { lower_module(acc, modules, module) })
+pub fn lower_module_interface(interface: t.ModuleInterface) {
+  ModuleInterface(
+    types: list.map(interface.custom_types, lower_custom_type(interface.name, _)),
+    functions: list.map(interface.functions, lower_function_declaration(
+      interface.name,
+      _,
+    )),
+    constants: list.map(interface.constants, lower_constant_declaration(
+      interface.name,
+      _,
+    )),
+  )
 }
 
-fn lower_module(acc: Module, modules, module: t.Module) {
-  let c = Context(module: module.name, definition: "", modules:)
+fn lower_function_declaration(module_name: String, f: t.FunctionDeclaration) {
+  let typ = map_poly(f.typ)
+  let id = get_id(module_name, f.name)
+  let parameters = list.map(f.parameters, lower_parameter)
+  FunctionDeclaration(typ:, id:, parameters:)
+}
+
+fn lower_constant_declaration(module_name: String, c: t.ConstantDeclaration) {
+  let typ = map_poly(c.typ)
+  let id = get_id(module_name, c.name)
+  ConstantDeclaration(typ:, id:)
+}
+
+pub fn lower_modules(
+  modules: dict.Dict(String, t.Module),
+) -> dict.Dict(String, Module) {
+  let interfaces =
+    dict.map_values(modules, fn(_, module) {
+      t.interface(module) |> lower_module_interface
+    })
+
+  dict.values(modules)
+  |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
+  |> list.fold([], fn(acc, module) {
+    let lowered = lower_module(interfaces, module)
+    [#(module.name, lowered), ..acc]
+  })
+  |> dict.from_list
+}
+
+fn lower_module(
+  interfaces: dict.Dict(String, ModuleInterface),
+  module: t.Module,
+) {
+  io.println("Lower " <> module.name)
+  let c = Context(module: module, definition: "", interfaces:)
+  let acc = Module(types: [], functions: [], externals: [], constants: [])
 
   // TODO detect what tuples are actually used
   let acc =
@@ -126,7 +189,7 @@ fn lower_module(acc: Module, modules, module: t.Module) {
         // no variants is considered external so we don't register it
         [] -> acc
         _ -> {
-          let custom = lower_custom_type(c, custom.definition)
+          let custom = lower_custom_type(c.module.name, custom.definition)
           Module(..acc, types: [custom, ..acc.types])
         }
       }
@@ -163,7 +226,7 @@ fn lower_module(acc: Module, modules, module: t.Module) {
           ) = external
           let fun = fun.definition
           let typ = map_poly(fun.typ)
-          let module = c.module
+          let module = c.module.name
           let name = fun.name
           let internal_name = get_id(module, name)
           let builtin = list.any(attrs, fn(x) { x.name == "builtin" })
@@ -185,14 +248,26 @@ fn lower_module(acc: Module, modules, module: t.Module) {
         }
       }
     })
+
+  let acc =
+    list.fold(module.constants, acc, fn(acc, constant) {
+      let constant = constant.definition
+      let constant =
+        Constant(
+          typ: map_poly(constant.typ),
+          id: get_id(module.name, constant.name),
+          value: lower_expression(c, constant.value),
+        )
+      Module(..acc, constants: [constant, ..acc.constants])
+    })
+
   acc
 }
 
-fn lower_custom_type(c: Context, custom: t.CustomType) {
+fn lower_custom_type(module_name: String, custom: t.CustomType) {
   let typ = map_poly(custom.typ)
-  let module = c.module
   let name = custom.name
-  let id = get_id(module, name)
+  let id = get_id(module_name, name)
   let variants =
     list.map(custom.variants, fn(variant) {
       let typ = map_poly(variant.typ)
@@ -204,7 +279,7 @@ fn lower_custom_type(c: Context, custom: t.CustomType) {
           }
           Parameter(map_type(field.item.typ), name)
         })
-      let id = get_id(module, variant.name)
+      let id = get_id(module_name, variant.name)
       Variant(typ, id, variant.name, fields)
     })
   CustomType(typ, id, name, variants)
@@ -214,7 +289,7 @@ fn lower_function(c: Context, def: t.Definition(t.FunctionDefinition)) {
   let c = Context(..c, definition: def.definition.name)
   let function = def.definition
   let typ = map_poly(function.typ)
-  let module = c.module
+  let module = c.module.name
   let name = function.name
   let id = get_id(module, name)
   let parameters = list.map(function.parameters, lower_parameter)
@@ -263,7 +338,7 @@ pub fn register_variant_functions(
   Module(..c, externals: [fun, ..c.externals])
 }
 
-fn lower_body(c: Context, body: List(t.Statement)) {
+fn lower_body(c: Context, body: List(t.Statement)) -> Exp {
   case body {
     [] -> lower_expression(c, t.Todo(t.nil_type, g.Span(0, 0), None))
     [statement] ->
@@ -1365,11 +1440,9 @@ fn lower_pattern_match(
 
           let subject = lower_expression(c, subject)
           let assert NamedType(custom, _) = subject.typ
-          let assert Ok(mod) = dict.get(c.modules, resolved_module)
-          let assert Ok(t.Definition(_, custom)) =
-            list.find(mod.custom_types, fn(custom_type) {
-              get_id(resolved_module, custom_type.definition.name) == custom
-            })
+          let assert Ok(mod) = dict.get(c.interfaces, resolved_module)
+          let assert Ok(custom) =
+            list.find(mod.types, fn(custom_type) { custom_type.id == custom })
           let variant = get_id(resolved_module, constructor)
 
           let variant_match = case custom.variants {
@@ -1404,15 +1477,26 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
       }
     }
     t.Constant(module:, name:, ..) -> {
-      // TODO: in order for lowering to not require implementation details of
-      // other modules, inlining must happen later
-      let assert Ok(mod) = dict.get(c.modules, module)
-      let assert Ok(constant) =
-        list.find(mod.constants, fn(constant) {
-          constant.definition.name == name
-        })
-      // inline the constant
-      lower_expression(c, constant.definition.value)
+      case module == c.module.name {
+        True -> {
+          let assert Ok(t.Definition(definition: constant, ..)) =
+            list.find(c.module.constants, fn(constant) {
+              constant.definition.name == name
+            })
+          // inline module-local constants
+          lower_expression(c, constant.value)
+        }
+        False -> {
+          let assert Ok(mod) = dict.get(c.interfaces, module)
+          let assert Ok(constant) =
+            list.find(mod.constants, fn(constant) {
+              constant.id == get_id(module, name)
+            })
+          assert constant.typ.vars == []
+          // retain references to foreign constants
+          Global(constant.typ.typ, constant.id)
+        }
+      }
     }
     t.NegateInt(typ:, value:, ..) -> {
       let typ = map_type(typ)
@@ -1546,20 +1630,11 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
       let typ = map_type(typ)
       let container = lower_expression(c, container)
       let assert NamedType(custom, _) = container.typ
-      let assert Ok(mod) = dict.get(c.modules, module)
-      let assert Ok(t.Definition(_, custom)) =
-        list.find(mod.custom_types, fn(c) {
-          get_id(mod.name, c.definition.name) == custom
-        })
+      let assert Ok(mod) = dict.get(c.interfaces, module)
+      let assert Ok(custom) = list.find(mod.types, fn(c) { c.id == custom })
       let assert Ok(variant) =
-        list.find(custom.variants, fn(v) { v.name == constructor })
-      let assert [field, ..] = list.drop(variant.fields, index)
-      let field = case field {
-        t.LabelledVariantField(label:, ..) -> label
-        t.UnlabelledVariantField(..) -> ""
-      }
-      let field = gen_names.field_name(field, index)
-      Op(typ, FieldAccess(variant.name, field), [container])
+        list.find(custom.variants, fn(v) { v.id == get_id(module, constructor) })
+      Op(typ, FieldAccess(variant.id, index), [container])
     }
     t.Call(typ:, function:, positional_arguments:, ..) -> {
       let typ = map_type(typ)
@@ -1570,7 +1645,7 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
     t.TupleIndex(typ:, tuple:, index:, ..) -> {
       let typ = map_type(typ)
       let tuple = lower_expression(c, tuple)
-      Op(typ, FieldAccess("#", gen_names.field_name("", index)), [tuple])
+      Op(typ, FieldAccess("#", index), [tuple])
     }
     t.FnCapture(..) -> todo
     t.BitString(typ:, segments:, ..) -> {
@@ -1824,7 +1899,7 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
 }
 
 fn current_location(c: Context) {
-  c.module <> "." <> c.definition
+  c.module.name <> "." <> c.definition
 }
 
 fn replace_var(replace: String, with: Exp, in: Exp) -> Exp {
@@ -1998,5 +2073,67 @@ fn unshadow(taken: List(String), i: Int, e: Exp) -> #(List(String), Int, Exp) {
       let #(taken, i, arg) = unshadow(taken, i, arg)
       #(taken, i, Panic(typ, arg))
     }
+  }
+}
+
+/// Merge the given modules into a single unified module, inlining any constants used
+pub fn merge_modules(modules: dict.Dict(String, Module)) -> Module {
+  // TODO: this is temporary, to avoid the need to change mono.
+  let mod = Module(types: [], functions: [], externals: [], constants: [])
+  let mod =
+    dict.values(modules)
+    |> list.fold(mod, fn(acc, mod) {
+      Module(
+        types: list.append(acc.types, mod.types),
+        functions: list.append(acc.functions, mod.functions),
+        externals: list.append(acc.externals, mod.externals),
+        constants: list.append(acc.constants, mod.constants),
+      )
+    })
+  let constants =
+    list.map(mod.constants, fn(constant) { #(constant.id, constant) })
+    |> dict.from_list
+  Module(
+    ..mod,
+    functions: list.map(mod.functions, inline_constants(constants, _)),
+    constants: [],
+  )
+}
+
+/// Inline constant values into the expressions that use them
+fn inline_constants(constants, function: Function) -> Function {
+  Function(..function, body: ic_exp(constants, function.body))
+}
+
+/// Inline constant values into the expressions that use them
+fn ic_exp(constants: dict.Dict(String, Constant), exp: Exp) -> Exp {
+  case exp {
+    Literal(..) -> exp
+    Local(..) -> exp
+    Global(typ: _, id:) -> {
+      case dict.get(constants, id) {
+        Ok(constant) -> ic_exp(constants, constant.value)
+        Error(_) -> exp
+      }
+    }
+    Fn(typ: _, parameters: _, body:) -> Fn(..exp, body: ic_exp(constants, body))
+    Call(typ: _, function:, arguments:) ->
+      Call(
+        ..exp,
+        function: ic_exp(constants, function),
+        arguments: list.map(arguments, ic_exp(constants, _)),
+      )
+    Op(typ: _, op: _, arguments:) ->
+      Op(..exp, arguments: list.map(arguments, ic_exp(constants, _)))
+    Let(typ: _, name: _, value:, body:) ->
+      Let(..exp, value: ic_exp(constants, value), body: ic_exp(constants, body))
+    If(typ: _, condition:, then:, els:) ->
+      If(
+        ..exp,
+        condition: ic_exp(constants, condition),
+        then: ic_exp(constants, then),
+        els: ic_exp(constants, els),
+      )
+    Panic(typ: _, value:) -> Panic(..exp, value: ic_exp(constants, value))
   }
 }
