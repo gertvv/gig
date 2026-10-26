@@ -155,9 +155,7 @@ fn lower_constant_declaration(module_name: String, c: t.ConstantDeclaration) {
   ConstantDeclaration(typ:, id:)
 }
 
-pub fn lower_modules(
-  modules: dict.Dict(String, t.Module),
-) -> dict.Dict(String, Module) {
+pub fn lower_modules(modules: dict.Dict(String, t.Module)) -> List(Module) {
   let interfaces =
     dict.map_values(modules, fn(_, module) {
       t.interface(module) |> lower_module_interface
@@ -167,9 +165,8 @@ pub fn lower_modules(
   |> list.sort(fn(a, b) { string.compare(a.name, b.name) })
   |> list.fold([], fn(acc, module) {
     let lowered = lower_module(interfaces, module)
-    [#(module.name, lowered), ..acc]
+    [lowered, ..acc]
   })
-  |> dict.from_list
 }
 
 fn lower_module(
@@ -2084,79 +2081,5 @@ fn unshadow(taken: List(String), i: Int, e: Exp) -> #(List(String), Int, Exp) {
       let #(taken, i, arg) = unshadow(taken, i, arg)
       #(taken, i, Panic(typ, arg))
     }
-  }
-}
-
-/// Merge the given modules into a single unified module, inlining any constants used
-pub fn merge_modules(
-  module_name: String,
-  modules: dict.Dict(String, Module),
-) -> Module {
-  // TODO: this is temporary, to avoid the need to change mono.
-  let mod =
-    Module(
-      name: module_name,
-      types: [],
-      functions: [],
-      externals: [],
-      constants: [],
-    )
-  let mod =
-    dict.values(modules)
-    |> list.fold(mod, fn(acc, mod) {
-      Module(
-        ..mod,
-        types: list.append(acc.types, mod.types),
-        functions: list.append(acc.functions, mod.functions),
-        externals: list.append(acc.externals, mod.externals),
-        constants: list.append(acc.constants, mod.constants),
-      )
-    })
-  let constants =
-    list.map(mod.constants, fn(constant) { #(constant.id, constant) })
-    |> dict.from_list
-  Module(
-    ..mod,
-    functions: list.map(mod.functions, inline_constants(constants, _)),
-    constants: [],
-  )
-}
-
-/// Inline constant values into the expressions that use them
-fn inline_constants(constants, function: Function) -> Function {
-  Function(..function, body: ic_exp(constants, function.body))
-}
-
-/// Inline constant values into the expressions that use them
-fn ic_exp(constants: dict.Dict(String, Constant), exp: Exp) -> Exp {
-  case exp {
-    Literal(..) -> exp
-    Local(..) -> exp
-    Global(..) -> exp
-    ConstantGlobal(typ: _, id:) -> {
-      case dict.get(constants, id) {
-        Ok(constant) -> ic_exp(constants, constant.value)
-        Error(_) -> exp
-      }
-    }
-    Fn(typ: _, parameters: _, body:) -> Fn(..exp, body: ic_exp(constants, body))
-    Call(typ: _, function:, arguments:) ->
-      Call(
-        ..exp,
-        function: ic_exp(constants, function),
-        arguments: list.map(arguments, ic_exp(constants, _)),
-      )
-    Op(typ: _, op: _, arguments:) ->
-      Op(..exp, arguments: list.map(arguments, ic_exp(constants, _)))
-    Let(typ: _, name: _, value:, body:) ->
-      Let(..exp, value: ic_exp(constants, value), body: ic_exp(constants, body))
-    If(typ: _, condition:, then:, els:) ->
-      If(
-        ..exp,
-        condition: ic_exp(constants, condition),
-        then: ic_exp(constants, then),
-        els: ic_exp(constants, els),
-      )
-    Panic(typ: _, value:) -> Panic(..exp, value: ic_exp(constants, value))
   }
 }

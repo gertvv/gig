@@ -1,13 +1,14 @@
 import anf/codegen
 import gig/closure
-import gig/core
+import gig/core_closure
 import gig/mono
 import gleam/dict
 import gleam/list
 import gleam/string
 
-pub fn module_headers(c: core.Module) {
-  c.externals
+pub fn module_headers(modules: List(core_closure.Module)) {
+  let module = mono.init_context(modules)
+  dict.values(module.in_externals)
   |> list.filter(fn(x) { !x.builtin })
   |> list.group(fn(x) { x.module })
   |> dict.to_list()
@@ -35,8 +36,6 @@ pub fn module_headers(c: core.Module) {
           )
         external
       })
-    let module = todo
-    // mono.init_context(c)
     let module = mono.Context(..module, externals:)
 
     let header =

@@ -47,7 +47,6 @@ pub type Expr {
   /// Bind takes a true closure and binds its environment variables.
   BindClosure(typ: core.Type, id: String, environment: List(Expr))
   /// Calls a bound closure.
-  /// TODO: rename arguments to params
   CallClosure(typ: core.Type, closure: Expr, arguments: List(Expr))
   Op(typ: core.Type, op: core.Op, arguments: List(Expr))
   Let(typ: core.Type, name: String, value: Expr, body: Expr)

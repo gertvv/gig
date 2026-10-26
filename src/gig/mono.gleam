@@ -97,7 +97,9 @@ pub type Exp {
   Panic(typ: Type, value: Exp)
 }
 
-pub fn init_context(in: u.Module) -> Context {
+pub fn init_context(in: List(u.Module)) -> Context {
+  let in = merge_modules(in)
+
   let in_types =
     list.fold(in.types, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
   let in_functions =
@@ -125,8 +127,6 @@ pub fn init_context(in: u.Module) -> Context {
 }
 
 pub fn run(in: List(u.Module), main_name: String) {
-  let in = merge_modules(in)
-
   let c = init_context(in)
 
   let main = case dict.get(c.in_functions, main_name) {
@@ -140,7 +140,7 @@ pub fn run(in: List(u.Module), main_name: String) {
 
   // instantiate types used by externals
   let c =
-    in.externals
+    dict.values(c.in_externals)
     |> list.filter(fn(x) { set.contains(c.used_modules, x.module) })
     |> list.filter(fn(x) { !x.builtin })
     |> list.fold(c, fn(c, external) {
@@ -525,6 +525,7 @@ fn typed_to_mono_exp(
           let #(c, arg) = typed_to_mono_exp(c, sub, arg)
           #(c, [arg, ..args])
         })
+      let args = list.reverse(args)
       #(c, CallClosure(typ, exp, args))
     }
     u.Op(typ, op, args) -> {

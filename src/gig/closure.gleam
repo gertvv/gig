@@ -172,7 +172,6 @@ fn cc(c: CC, e: mono.Exp) -> #(CC, Exp) {
     }
     mono.CallGlobal(typ:, id: fun_name, args:) -> {
       let fun_type = mono.FunctionType(list.map(args, fn(arg) { arg.typ }), typ)
-      // TODO: add the fun_type to CallGlobal?
       let fun = Var(fun_type, fun_name)
       let #(c, args) =
         list.fold(args, #(c, []), fn(acc, arg) {
@@ -191,7 +190,7 @@ fn cc(c: CC, e: mono.Exp) -> #(CC, Exp) {
           let #(c, arg) = cc(c, arg)
           #(c, [arg, ..args])
         })
-      // let args = list.reverse(args)
+      let args = list.reverse(args)
       #(c, CallClosure(typ, fun, args))
     }
     mono.Op(typ, op, args) -> {

@@ -118,27 +118,26 @@ pub fn compile(gleam_file_name: String, options: CompileOptions) {
       module_id,
     )
 
+  // TODO: lower modules in isolation
   let modules = core.lower_modules(dict.map_values(typed, fn(_, p) { p.0 }))
 
+  // this identifies, creates, and explicitly binds, closures
+  // this is the IR that could be serialized on a per-module basis
+  // it is also intended to be "back-end neutral"
+  let modules = list.map(modules, core_closure.lower_module)
+
   case options.headers {
-    True ->
-      generate_headers_only(core.merge_modules(module_id, modules), sources)
+    True -> generate_headers_only(modules, sources)
     False ->
-      compile_to_binary(
-        dict.values(modules),
-        sources,
-        module_id,
-        target_path,
-        options,
-      )
+      compile_to_binary(modules, sources, module_id, target_path, options)
   }
 }
 
 fn generate_headers_only(
-  core: core.Module,
+  modules: List(core_closure.Module),
   sources: dict.Dict(String, String),
 ) -> String {
-  headers.module_headers(core)
+  headers.module_headers(modules)
   |> list.each(fn(item) {
     let #(module, header) = item
     // prefer the patch file location for placing the header
@@ -162,7 +161,7 @@ fn generate_headers_only(
 }
 
 fn compile_to_binary(
-  modules: List(core.Module),
+  modules: List(core_closure.Module),
   sources: dict.Dict(String, String),
   module_id: String,
   target_path: String,
@@ -171,11 +170,6 @@ fn compile_to_binary(
   // compile to c
   let c_file = target_path <> module_id <> ".c"
   io.println("Generating ./" <> c_file)
-
-  // this identifies, creates, and explicitly binds, closures
-  // this is the IR that could be serialized on a per-module basis
-  // it is also intended to be "back-end neutral"
-  let modules = list.map(modules, core_closure.lower_module)
 
   // monomorphize, this is still intended to be "back-end neutral"
   // but by nature, it needs all the (relevant/reachable) modules
