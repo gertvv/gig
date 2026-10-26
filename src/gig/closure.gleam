@@ -2,7 +2,6 @@ import gig/core
 import gig/mono
 import gleam/set
 
-import gleam/int
 import gleam/list
 
 type CC {
@@ -33,16 +32,17 @@ pub type Variant {
     name: String,
     untyped_name: String,
     display_name: String,
-    fields: List(Field),
+    fields: List(mono.Field),
   )
 }
 
-pub type Field {
-  Field(name: String, typ: mono.Type)
-}
-
 pub type Function {
-  Function(name: String, parameters: List(Field), return: mono.Type, body: Exp)
+  Function(
+    name: String,
+    parameters: List(mono.Field),
+    return: mono.Type,
+    body: Exp,
+  )
 }
 
 pub type Exp {
@@ -63,7 +63,8 @@ pub fn cc_module(mod: mono.Context) {
     list.fold(mod.functions, c, fn(c, fun) {
       let #(c, e) = cc(c, fun.body)
 
-      let parameters = list.map(fun.parameters, fn(x) { Field(x.name, x.typ) })
+      let parameters =
+        list.map(fun.parameters, fn(x) { mono.Field(x.name, x.typ) })
 
       let function = Function(fun.name, parameters, fun.return, e)
 
@@ -72,10 +73,62 @@ pub fn cc_module(mod: mono.Context) {
     })
 
   let c =
+    list.fold(mod.closures, c, fn(c, closure) {
+      let mono.Closure(name: id, environment:, parameters:, return:, body:) =
+        closure
+      let name = id
+      case environment {
+        [] -> {
+          let #(c, body) = cc(c, body)
+          let fun = Function(name:, parameters:, return:, body:)
+          let functions = [fun, ..c.mod.functions]
+          CC(..c, mod: Module(..c.mod, functions:))
+        }
+        _ -> {
+          let env_type_name = "Env_" <> id
+          let env_type = mono.NamedType(env_type_name, [])
+          let parameters = [mono.Field("ENV", env_type), ..parameters]
+          let #(c, body) = cc(c, body)
+          let body =
+            environment
+            |> list.fold(body, fn(exp, field) {
+              let mono.Field(name, typ) = field
+              // function from env -> field
+              let access =
+                Op(
+                  typ,
+                  mono.FieldAccess(
+                    mono.StructPointerAccess,
+                    env_type_name,
+                    name,
+                  ),
+                  [Var(env_type, "ENV")],
+                )
+              Let(exp.typ, name, access, exp)
+            })
+          let fun = Function(name:, parameters:, return:, body:)
+          let functions = [fun, ..c.mod.functions]
+          let variant =
+            Variant(env_type_name, env_type_name, env_type_name, environment)
+          let typedef =
+            CustomType(
+              env_type_name,
+              env_type_name,
+              env_type_name,
+              [variant],
+              True,
+            )
+          let types = [typedef, ..c.mod.types]
+          CC(..c, mod: Module(..c.mod, types:, functions:))
+        }
+      }
+    })
+
+  let c =
     list.fold(mod.types, c, fn(c, custom) {
       let variants =
         list.map(custom.variants, fn(v) {
-          let fields = list.map(v.fields, fn(f) { Field(f.name, f.typ) })
+          let fields = list.map(v.fields, fn(f) { mono.Field(f.name, f.typ) })
           Variant(v.name, v.untyped_name, v.display_name, fields)
         })
       let pointer = case variants {
@@ -105,7 +158,9 @@ pub fn cc_module(mod: mono.Context) {
     |> list.map(fn(external) {
       let assert mono.FunctionType(_, ret) = external.typ
       let params =
-        list.map(external.parameters, fn(param) { Field(param.name, param.typ) })
+        list.map(external.parameters, fn(param) {
+          mono.Field(param.name, param.typ)
+        })
       let string_type = mono.NamedType("String", [])
       let todo_val = Literal(string_type, core.String(""))
       let body = Panic(ret, todo_val)
@@ -120,62 +175,17 @@ pub fn cc_module(mod: mono.Context) {
   Module(..c.mod, externals:)
 }
 
-fn combine(a: List(a), b: List(a)) -> List(a) {
-  list.fold(a, b, fn(b, a) { [a, ..b] })
-}
-
-fn fv(n: List(String), e: mono.Exp) -> List(#(String, mono.Type)) {
-  case e {
-    mono.Literal(_, _) -> []
-    mono.Local(typ, var) -> {
-      case list.contains(n, var) {
-        True -> []
-        False -> [#(var, typ)]
-      }
-    }
-    mono.Global(_, _) -> []
-    mono.Call(_, fun, args) -> {
-      let v = fv(n, fun)
-      list.fold(args, v, fn(v, arg) { combine(fv(n, arg), v) })
-    }
-    mono.Op(_, _, args) -> {
-      list.fold(args, [], fn(v, arg) { combine(fv(n, arg), v) })
-    }
-    mono.Fn(_, vars, exp) -> {
-      let vars = list.map(vars, fn(x) { x.name })
-      let n = combine(vars, n)
-      fv(n, exp)
-    }
-    mono.Let(_, var, val, exp) -> {
-      let n = [var, ..n]
-      let v = fv(n, val)
-      combine(v, fv(n, exp))
-    }
-    mono.If(_, cond, then_e, else_e) -> {
-      let v = fv(n, cond)
-      let v = combine(v, fv(n, then_e))
-      combine(v, fv(n, else_e))
-    }
-    mono.Panic(_, arg) -> fv(n, arg)
-  }
-}
-
 fn cc(c: CC, e: mono.Exp) -> #(CC, Exp) {
   case e {
     mono.Literal(typ, var) -> #(c, Literal(typ, var))
     mono.Local(typ, var) -> #(c, Var(typ, var))
-    mono.Global(mono.FunctionType(..) as typ, var) -> {
-      let val =
-        Call(typ, Var(typ, "create_function"), [
-          Var(mono.NamedType("void*", []), var),
-        ])
-      #(c, val)
+    mono.ConstantGlobal(typ:, id:) -> {
+      // zero-arg constructor
+      #(c, Var(typ, id))
     }
-    mono.Global(typ, var) -> {
-      #(c, Var(typ, var))
-    }
-    // detect "direct" function calls
-    mono.Call(typ, mono.Global(fun_type, fun_name), args) -> {
+    mono.CallGlobal(typ:, id: fun_name, args:) -> {
+      let fun_type = mono.FunctionType(list.map(args, fn(arg) { arg.typ }), typ)
+      // TODO: add the fun_type to CallGlobal?
       let fun = Var(fun_type, fun_name)
       let #(c, args) =
         list.fold(args, #(c, []), fn(acc, arg) {
@@ -186,7 +196,7 @@ fn cc(c: CC, e: mono.Exp) -> #(CC, Exp) {
       let args = list.reverse(args)
       #(c, Call(typ, fun, args))
     }
-    mono.Call(typ, fun, args) -> {
+    mono.CallClosure(typ, fun, args) -> {
       let #(c, fun) = cc(c, fun)
       let #(c, args) =
         list.fold(args, #(c, []), fn(acc, arg) {
@@ -194,7 +204,7 @@ fn cc(c: CC, e: mono.Exp) -> #(CC, Exp) {
           let #(c, arg) = cc(c, arg)
           #(c, [arg, ..args])
         })
-      let args = list.reverse(args)
+      // let args = list.reverse(args)
       #(c, CallClosure(typ, fun, args))
     }
     mono.Op(typ, op, args) -> {
@@ -207,112 +217,42 @@ fn cc(c: CC, e: mono.Exp) -> #(CC, Exp) {
       let args = list.reverse(args)
       #(c, Op(typ, op, args))
     }
-    mono.Fn(typ, vars, exp) -> {
-      let #(c, body) = cc(c, exp)
-
-      let var_names = list.map(vars, fn(x) { x.name })
-      let var_types = list.map(vars, fn(x) { x.typ })
-
-      let closure_fields = list.unique(fv(var_names, e))
-
-      case closure_fields {
+    mono.BindClosure(typ:, id:, environment:) -> {
+      case environment {
         [] -> {
-          // create global function
-          let id = int.to_string(c.uid)
-          let name = "Closure_" <> id
-
-          let parameters =
-            list.zip(var_names, var_types)
-            |> list.map(fn(i) { Field(i.0, i.1) })
-
-          let return = body.typ
-
-          let fun = Function(name:, parameters:, return:, body:)
-          let functions = [fun, ..c.mod.functions]
-          let c = CC(Module(..c.mod, functions:), c.uid + 1)
-
-          // make a closure reference to the function
-          let val =
+          let name = id
+          let fun_pointer = Var(mono.NamedType("void*", []), name)
+          let closure =
             Call(typ, Var(typ, "create_function"), [
-              Var(mono.NamedType("void*", []), name),
+              fun_pointer,
             ])
-          #(c, val)
+          #(c, closure)
         }
         _ -> {
-          // create global function
-          let id = int.to_string(c.uid)
-          let name = "Closure_" <> id
-          let env_type_name = "ClosureEnv_" <> id
+          let name = id
+          let env_type_name = "Env_" <> id
           let env_type = mono.NamedType(env_type_name, [])
-
-          let var_names = ["ENV", ..var_names]
-          let var_types = [env_type, ..var_types]
-          let parameters =
-            list.zip(var_names, var_types)
-            |> list.map(fn(i) { Field(i.0, i.1) })
-
-          let return = body.typ
-
-          // add let bindings to unpack the closure
-          let body =
-            closure_fields
-            |> list.fold(body, fn(exp, field) {
-              let #(name, typ) = field
-
-              // function from env -> field
-              let access =
-                Op(
-                  typ,
-                  mono.FieldAccess(
-                    mono.StructPointerAccess,
-                    env_type_name,
-                    name,
-                  ),
-                  [Var(env_type, "ENV")],
-                )
-
-              Let(exp.typ, name, access, exp)
+          let #(c, env_args) =
+            list.fold(environment, #(c, []), fn(acc, arg) {
+              let #(c, args) = acc
+              let #(c, arg) = cc(c, arg)
+              #(c, [arg, ..args])
             })
-
-          let fun = Function(name:, parameters:, return:, body:)
-          let functions = [fun, ..c.mod.functions]
-
-          // create the closure object
+          // let env_args = list.reverse(env_args)
           let fun_pointer = Var(mono.NamedType("void*", []), name)
-
-          let env_arg_types = list.map(closure_fields, fn(x) { x.1 })
+          let env_arg_types = list.map(environment, fn(x) { x.typ })
           let new_env_fun_type = mono.FunctionType(env_arg_types, env_type)
-          let env_args = list.map(closure_fields, fn(x) { Var(x.1, x.0) })
-
           let env_constructor_call =
             Call(
               env_type,
               Var(new_env_fun_type, "new_" <> env_type_name),
               env_args,
             )
-
           let closure =
             Call(typ, Var(typ, "create_closure"), [
               fun_pointer,
               env_constructor_call,
             ])
-
-          let fields = list.map(closure_fields, fn(x) { Field(x.0, x.1) })
-          let variant =
-            Variant(env_type_name, env_type_name, env_type_name, fields)
-          let typedef =
-            CustomType(
-              env_type_name,
-              env_type_name,
-              env_type_name,
-              [variant],
-              True,
-            )
-
-          let types = [typedef, ..c.mod.types]
-
-          let c = CC(Module(..c.mod, types:, functions:), c.uid + 1)
-
           #(c, closure)
         }
       }

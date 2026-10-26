@@ -1,21 +1,27 @@
 import gig/core as t
+import gig/core_closure as u
 import gig/gen_names
 import gleam/dict
 import gleam/io
 import gleam/list
+import gleam/result
 import gleam/set
 import gleam/string
 
 pub type Context {
   Context(
     in_types: dict.Dict(String, t.CustomType),
-    in_functions: dict.Dict(String, t.Function),
+    in_functions: dict.Dict(String, u.Function),
+    in_closures: dict.Dict(String, u.Closure),
     in_externals: dict.Dict(String, t.External),
+    in_constants: dict.Dict(String, u.Constant),
     types: List(CustomType),
     functions: List(Function),
+    closures: List(Closure),
     externals: List(External),
     used_types: set.Set(String),
     used_functions: set.Set(String),
+    used_closures: set.Set(String),
     used_externals: set.Set(String),
     used_modules: set.Set(String),
     used_builtin: set.Set(String),
@@ -64,6 +70,16 @@ pub type Function {
   Function(name: String, parameters: List(Field), return: Type, body: Exp)
 }
 
+pub type Closure {
+  Closure(
+    name: String,
+    environment: List(Field),
+    parameters: List(Field),
+    return: Type,
+    body: Exp,
+  )
+}
+
 pub type FieldAccessKind {
   StructAccess
   StructPointerAccess
@@ -78,41 +94,51 @@ pub type Op {
 pub type Exp {
   Literal(typ: Type, val: t.LiteralKind)
   Local(typ: Type, var: String)
-  Global(typ: Type, var: String)
-  Call(typ: Type, fun: Exp, arg: List(Exp))
+  ConstantGlobal(typ: Type, id: String)
+  CallGlobal(typ: Type, id: String, args: List(Exp))
+  BindClosure(typ: Type, id: String, environment: List(Exp))
+  CallClosure(typ: Type, fun: Exp, arg: List(Exp))
   Op(typ: Type, op: Op, arg: List(Exp))
-  // CallClosure(typ: Type, fun: Exp, arg: List(Exp))
-  Fn(typ: Type, parameters: List(Field), body: Exp)
   Let(typ: Type, var: String, val: Exp, exp: Exp)
   If(typ: Type, cond: Exp, then_exp: Exp, else_exp: Exp)
   Panic(typ: Type, value: Exp)
 }
 
-pub fn init_context(in: t.Module) -> Context {
+pub fn init_context(in: u.Module) -> Context {
   let in_types =
     list.fold(in.types, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
   let in_functions =
     list.fold(in.functions, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
+  let in_closures =
+    list.fold(in.closures, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
   let in_externals =
     list.fold(in.externals, dict.new(), fn(d, i) {
       dict.insert(d, i.internal_name, i)
     })
+  let in_constants =
+    list.fold(in.constants, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
   Context(
     in_types:,
     in_functions:,
+    in_closures:,
     in_externals:,
+    in_constants:,
     types: [],
     functions: [],
+    closures: [],
     externals: [],
     used_types: set.new(),
     used_functions: set.new(),
+    used_closures: set.new(),
     used_externals: set.new(),
     used_modules: set.new(),
     used_builtin: set.new(),
   )
 }
 
-pub fn run(in: t.Module, main_name: String) {
+pub fn run(in: List(u.Module), main_name: String) {
+  let in = merge_modules(in)
+
   let c = init_context(in)
 
   let main = case dict.get(c.in_functions, main_name) {
@@ -136,6 +162,30 @@ pub fn run(in: t.Module, main_name: String) {
     })
 
   #(c, main_name)
+}
+
+fn merge_modules(in: List(u.Module)) -> u.Module {
+  list.fold(
+    in,
+    u.Module(
+      name: "app",
+      types: [],
+      functions: [],
+      externals: [],
+      closures: [],
+      constants: [],
+    ),
+    fn(a, b) {
+      u.Module(
+        name: a.name,
+        types: list.append(a.types, b.types),
+        functions: list.append(a.functions, b.functions),
+        externals: list.append(a.externals, b.externals),
+        closures: list.append(a.closures, b.closures),
+        constants: list.append(a.constants, b.constants),
+      )
+    },
+  )
 }
 
 pub fn sub_type(sub: List(#(t.TypeVarId, Type)), typ: t.Type) -> Type {
@@ -190,6 +240,8 @@ fn unify_type(
           |> list.flat_map(fn(x) { unify_type(c, x.0, x.1) }),
       )
     _, _ -> {
+      echo poly
+      echo mono
       panic as "could not unify types"
     }
   }
@@ -263,126 +315,177 @@ pub fn instantiate_type(c: Context, mono: Type) {
   }
 }
 
-fn instantiate_function(c: Context, name: String, mono: Type) {
-  case dict.get(c.in_functions, name) {
-    Ok(fun) -> {
-      let sub = unify_poly(c, fun.typ, mono)
-      let type_string = get_type_string(sub)
-      let mono_name = fun.id <> type_string
+fn instantiate_function(
+  c: Context,
+  name: String,
+  mono: Type,
+) -> #(Context, String) {
+  let result =
+    {
+      dict.get(c.in_functions, name)
+      |> result.map(fn(fun) {
+        let sub = unify_poly(c, fun.typ, mono)
+        let type_string = get_type_string(sub)
+        let mono_name = fun.id <> type_string
 
-      case fun.body {
-        t.Panic(_, _) -> {
-          io.println_error("missing function " <> fun.id <> " in " <> name)
+        case fun.body {
+          u.Panic(_, _) -> {
+            io.println_error("missing function " <> fun.id <> " in " <> name)
+          }
+          _ -> Nil
         }
-        _ -> Nil
-      }
 
-      case set.contains(c.used_functions, mono_name) {
-        True -> #(c, mono_name)
-        False -> {
-          let used_functions = set.insert(c.used_functions, mono_name)
-          let c = Context(..c, used_functions:)
+        case set.contains(c.used_functions, mono_name) {
+          True -> #(c, mono_name)
+          False -> {
+            let used_functions = set.insert(c.used_functions, mono_name)
+            let c = Context(..c, used_functions:)
 
-          // instantiate function
-          let #(c, mono_body) = typed_to_mono_exp(c, sub, fun.body)
-          let params =
-            list.map(fun.parameters, fn(p) {
-              let typ = sub_type(sub, p.typ)
-              Field(p.name, typ)
-            })
-          let assert FunctionType(_, ret) = mono
-          let fun =
-            Function(
-              name: mono_name,
-              parameters: params,
-              return: ret,
-              body: mono_body,
-            )
+            // instantiate function
+            let #(c, mono_body) = typed_to_mono_exp(c, sub, fun.body)
+            let params =
+              list.map(fun.parameters, fn(p) {
+                let typ = sub_type(sub, p.typ)
+                Field(p.name, typ)
+              })
+            let assert FunctionType(_, ret) = mono
+            let fun =
+              Function(
+                name: mono_name,
+                parameters: params,
+                return: ret,
+                body: mono_body,
+              )
 
-          // add to module
-          let functions = [fun, ..c.functions]
-          let c = Context(..c, functions:)
+            // add to module
+            let functions = [fun, ..c.functions]
+            let c = Context(..c, functions:)
 
-          #(c, mono_name)
+            #(c, mono_name)
+          }
         }
-      }
+      })
     }
-    Error(_) ->
-      case dict.get(c.in_externals, name) {
-        Ok(external) -> {
-          case external.builtin {
-            True -> {
-              let sub = unify_poly(c, external.typ, mono)
-              let type_string = get_type_string(sub)
-              let lookup_name = external.external_name <> type_string
-              case set.contains(c.used_builtin, lookup_name) {
-                True -> #(c, lookup_name)
-                False -> {
-                  // also instantiate builtins used by this builtin
-                  let source_type = case mono {
-                    // this happens with unary constructors
-                    NamedType(..) -> mono
-                    FunctionType([], ret) -> ret
-                    FunctionType([a, ..], _ret) -> a
-                  }
-                  let c = case name {
-                    "lt" -> {
-                      let c = instantiate_builtin(c, "eq", source_type)
-                      instantiate_builtin(c, name, source_type)
-                    }
-                    "eq" | "inspect" -> {
-                      instantiate_builtin(c, name, source_type)
-                    }
-                    _constructor -> {
-                      let used_builtin = set.insert(c.used_builtin, lookup_name)
-                      Context(..c, used_builtin:)
-                    }
-                  }
+    |> result.lazy_or(fn() {
+      dict.get(c.in_closures, name)
+      |> result.map(fn(fun) {
+        let sub = unify_poly(c, fun.typ, mono)
+        let type_string = get_type_string(sub)
+        let mono_name = fun.id <> type_string
 
-                  #(c, lookup_name)
+        case set.contains(c.used_closures, mono_name) {
+          True -> #(c, mono_name)
+          False -> {
+            let used_closures = set.insert(c.used_closures, mono_name)
+            let c = Context(..c, used_closures:)
+
+            // instantiate function
+            let #(c, mono_body) = typed_to_mono_exp(c, sub, fun.body)
+            let params =
+              list.map(fun.parameters, fn(p) {
+                let typ = sub_type(sub, p.typ)
+                Field(p.name, typ)
+              })
+            let environment =
+              list.map(fun.environment, fn(p) {
+                let typ = sub_type(sub, p.typ)
+                Field(p.name, typ)
+              })
+            let assert FunctionType(_, ret) = mono
+            let fun =
+              Closure(
+                name: mono_name,
+                environment:,
+                parameters: params,
+                return: ret,
+                body: mono_body,
+              )
+
+            // add to module
+            let closures = [fun, ..c.closures]
+            let c = Context(..c, closures:)
+
+            #(c, mono_name)
+          }
+        }
+      })
+    })
+    |> result.lazy_or(fn() {
+      dict.get(c.in_externals, name)
+      |> result.map(fn(external) {
+        case external.builtin {
+          True -> {
+            let sub = unify_poly(c, external.typ, mono)
+            let type_string = get_type_string(sub)
+            let lookup_name = external.external_name <> type_string
+            case set.contains(c.used_builtin, lookup_name) {
+              True -> #(c, lookup_name)
+              False -> {
+                // also instantiate builtins used by this builtin
+                let source_type = case mono {
+                  // this happens with unary constructors
+                  NamedType(..) -> mono
+                  FunctionType([], ret) -> ret
+                  FunctionType([a, ..], _ret) -> a
                 }
+                let c = case name {
+                  "lt" -> {
+                    let c = instantiate_builtin(c, "eq", source_type)
+                    instantiate_builtin(c, name, source_type)
+                  }
+                  "eq" | "inspect" -> {
+                    instantiate_builtin(c, name, source_type)
+                  }
+                  _constructor -> {
+                    let used_builtin = set.insert(c.used_builtin, lookup_name)
+                    Context(..c, used_builtin:)
+                  }
+                }
+
+                #(c, lookup_name)
               }
             }
-            False -> {
-              let lookup_name = external.external_name
-              case set.contains(c.used_externals, lookup_name) {
-                True -> #(c, lookup_name)
-                False -> {
-                  let typ = sub_type([], external.typ.typ)
-                  let c = instantiate_type(c, typ)
+          }
+          False -> {
+            let lookup_name = external.external_name
+            case set.contains(c.used_externals, lookup_name) {
+              True -> #(c, lookup_name)
+              False -> {
+                let typ = sub_type([], external.typ.typ)
+                let c = instantiate_type(c, typ)
 
-                  let params =
-                    list.map(external.parameters, fn(param) {
-                      Field(param.name, sub_type([], param.typ))
-                    })
+                let params =
+                  list.map(external.parameters, fn(param) {
+                    Field(param.name, sub_type([], param.typ))
+                  })
 
-                  // add the external to output
-                  let external =
-                    External(
-                      internal_name: external.internal_name,
-                      external_name: external.external_name,
-                      module: external.module,
-                      parameters: params,
-                      builtin: external.builtin,
-                      typ: typ,
-                    )
+                // add the external to output
+                let external =
+                  External(
+                    internal_name: external.internal_name,
+                    external_name: external.external_name,
+                    module: external.module,
+                    parameters: params,
+                    builtin: external.builtin,
+                    typ: typ,
+                  )
 
-                  let externals = [external, ..c.externals]
-                  let used_modules = set.insert(c.used_modules, external.module)
-                  let used_externals = set.insert(c.used_externals, lookup_name)
+                let externals = [external, ..c.externals]
+                let used_modules = set.insert(c.used_modules, external.module)
+                let used_externals = set.insert(c.used_externals, lookup_name)
 
-                  let c =
-                    Context(..c, externals:, used_modules:, used_externals:)
-                  #(c, lookup_name)
-                }
+                let c = Context(..c, externals:, used_modules:, used_externals:)
+                #(c, lookup_name)
               }
             }
           }
         }
-        Error(_) -> {
-          panic as { "invalid reference " <> name }
-        }
-      }
+      })
+    })
+
+  case result {
+    Ok(rval) -> rval
+    Error(_) -> panic as { "invalid reference " <> name }
   }
 }
 
@@ -420,22 +523,33 @@ fn instantiate_builtin(c: Context, fun_name: String, mono: Type) -> Context {
 fn typed_to_mono_exp(
   c: Context,
   sub: List(#(t.TypeVarId, Type)),
-  e: t.Exp,
+  e: u.Expr,
 ) -> #(Context, Exp) {
   let c = instantiate_type(c, sub_type(sub, e.typ))
   case e {
-    t.Literal(typ, v) -> #(c, Literal(sub_type(sub, typ), v))
-    t.Local(typ, name) -> {
+    u.Literal(typ, v) -> #(c, Literal(sub_type(sub, typ), v))
+    u.Local(typ, name) -> {
       let typ = sub_type(sub, typ)
       #(c, Local(typ, name))
     }
-    t.Global(typ, name) -> {
-      let typ = sub_type(sub, typ)
-      let #(c, name) = instantiate_function(c, name, typ)
-      #(c, Global(typ, name))
+    u.ConstantGlobal(typ, name) -> {
+      case dict.get(c.in_constants, name) {
+        Ok(constant) -> {
+          // inline constants
+          typed_to_mono_exp(c, sub, constant.value)
+        }
+        Error(_) -> {
+          // zero-arg constructor
+          let typ = sub_type(sub, typ)
+          let #(c, name) = instantiate_function(c, name, typ)
+          #(c, ConstantGlobal(typ:, id: name))
+        }
+      }
     }
-    t.Call(typ, fun, args) -> {
-      let #(c, fun) = typed_to_mono_exp(c, sub, fun)
+    u.CallGlobal(typ: return, id:, arguments: args) -> {
+      let typ = t.FunctionType(list.map(args, fn(arg) { arg.typ }), return)
+      let typ = sub_type(sub, typ)
+      let #(c, name) = instantiate_function(c, id, typ)
       let #(c, args) =
         list.fold(args, #(c, []), fn(acc, arg) {
           let #(c, args) = acc
@@ -443,10 +557,32 @@ fn typed_to_mono_exp(
           #(c, [arg, ..args])
         })
       let args = list.reverse(args)
-      let typ = sub_type(sub, typ)
-      #(c, Call(typ, fun, args))
+      let return = sub_type(sub, return)
+      #(c, CallGlobal(return, name, args))
     }
-    t.Op(typ, op, args) -> {
+    u.BindClosure(typ:, id: name, environment: env) -> {
+      let typ = sub_type(sub, typ)
+      let #(c, name) = instantiate_function(c, name, typ)
+      let #(c, env) =
+        list.fold(env, #(c, []), fn(acc, arg) {
+          let #(c, env) = acc
+          let #(c, var) = typed_to_mono_exp(c, sub, arg)
+          #(c, [var, ..env])
+        })
+      #(c, BindClosure(typ, name, env))
+    }
+    u.CallClosure(typ:, closure: exp, arguments: args) -> {
+      let typ = sub_type(sub, typ)
+      let #(c, exp) = typed_to_mono_exp(c, sub, exp)
+      let #(c, args) =
+        list.fold(args, #(c, []), fn(acc, arg) {
+          let #(c, args) = acc
+          let #(c, arg) = typed_to_mono_exp(c, sub, arg)
+          #(c, [arg, ..args])
+        })
+      #(c, CallClosure(typ, exp, args))
+    }
+    u.Op(typ, op, args) -> {
       let #(c, args) =
         list.fold(args, #(c, []), fn(acc, arg) {
           let #(c, args) = acc
@@ -480,30 +616,20 @@ fn typed_to_mono_exp(
       }
       #(c, Op(typ, op, args))
     }
-    t.Fn(typ, params, exp) -> {
-      let typ = sub_type(sub, typ)
-      let #(c, exp) = typed_to_mono_exp(c, sub, exp)
-      let params =
-        list.map(params, fn(p) {
-          let typ = sub_type(sub, p.typ)
-          Field(p.name, typ)
-        })
-      #(c, Fn(typ, params, exp))
-    }
-    t.Let(typ, var, val, exp) -> {
+    u.Let(typ, var, val, exp) -> {
       let #(c, val) = typed_to_mono_exp(c, sub, val)
       let #(c, exp) = typed_to_mono_exp(c, sub, exp)
       let typ = sub_type(sub, typ)
       #(c, Let(typ, var, val, exp))
     }
-    t.If(typ, cond, then_e, else_e) -> {
+    u.If(typ, cond, then_e, else_e) -> {
       let #(c, cond) = typed_to_mono_exp(c, sub, cond)
       let #(c, then_e) = typed_to_mono_exp(c, sub, then_e)
       let #(c, else_e) = typed_to_mono_exp(c, sub, else_e)
       let typ = sub_type(sub, typ)
       #(c, If(typ, cond, then_e, else_e))
     }
-    t.Panic(typ, arg) -> {
+    u.Panic(typ, arg) -> {
       let #(c, arg) = typed_to_mono_exp(c, sub, arg)
       let typ = sub_type(sub, typ)
       #(c, Panic(typ, arg))

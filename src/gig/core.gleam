@@ -50,6 +50,7 @@ pub type Exp {
   Literal(typ: Type, value: LiteralKind)
   Local(typ: Type, name: String)
   Global(typ: Type, id: String)
+  ConstantGlobal(typ: Type, id: String)
   Fn(typ: Type, parameters: List(Parameter), body: Exp)
   Call(typ: Type, function: Exp, arguments: List(Exp))
   Op(typ: Type, op: Op, arguments: List(Exp))
@@ -103,6 +104,7 @@ pub type ConstantDeclaration {
 
 pub type Module {
   Module(
+    name: String,
     types: List(CustomType),
     functions: List(Function),
     externals: List(External),
@@ -176,7 +178,14 @@ fn lower_module(
 ) {
   io.println("Lower " <> module.name)
   let c = Context(module: module, definition: "", interfaces:)
-  let acc = Module(types: [], functions: [], externals: [], constants: [])
+  let acc =
+    Module(
+      name: module.name,
+      types: [],
+      functions: [],
+      externals: [],
+      constants: [],
+    )
 
   // TODO detect what tuples are actually used
   let acc =
@@ -1494,7 +1503,7 @@ fn lower_expression(c: Context, exp: t.Expression) -> Exp {
             })
           assert constant.typ.vars == []
           // retain references to foreign constants
-          Global(constant.typ.typ, constant.id)
+          ConstantGlobal(constant.typ.typ, constant.id)
         }
       }
     }
@@ -1914,6 +1923,7 @@ fn replace_var(replace: String, with: Exp, in: Exp) -> Exp {
         _ -> Literal(typ, val)
       }
     Global(_, _) -> in
+    ConstantGlobal(_, _) -> in
     Local(_typ, var) ->
       case var == replace {
         True -> with
@@ -2004,6 +2014,7 @@ fn unshadow(taken: List(String), i: Int, e: Exp) -> #(List(String), Int, Exp) {
     Literal(_, _) -> #(taken, i, e)
     Local(_, _) -> #(taken, i, e)
     Global(_, _) -> #(taken, i, e)
+    ConstantGlobal(_, _) -> #(taken, i, e)
     Call(typ, fun, args) -> {
       let #(taken, i, fun) = unshadow(taken, i, fun)
       let #(taken, i, args) =
@@ -2077,13 +2088,24 @@ fn unshadow(taken: List(String), i: Int, e: Exp) -> #(List(String), Int, Exp) {
 }
 
 /// Merge the given modules into a single unified module, inlining any constants used
-pub fn merge_modules(modules: dict.Dict(String, Module)) -> Module {
+pub fn merge_modules(
+  module_name: String,
+  modules: dict.Dict(String, Module),
+) -> Module {
   // TODO: this is temporary, to avoid the need to change mono.
-  let mod = Module(types: [], functions: [], externals: [], constants: [])
+  let mod =
+    Module(
+      name: module_name,
+      types: [],
+      functions: [],
+      externals: [],
+      constants: [],
+    )
   let mod =
     dict.values(modules)
     |> list.fold(mod, fn(acc, mod) {
       Module(
+        ..mod,
         types: list.append(acc.types, mod.types),
         functions: list.append(acc.functions, mod.functions),
         externals: list.append(acc.externals, mod.externals),
@@ -2110,7 +2132,8 @@ fn ic_exp(constants: dict.Dict(String, Constant), exp: Exp) -> Exp {
   case exp {
     Literal(..) -> exp
     Local(..) -> exp
-    Global(typ: _, id:) -> {
+    Global(..) -> exp
+    ConstantGlobal(typ: _, id:) -> {
       case dict.get(constants, id) {
         Ok(constant) -> ic_exp(constants, constant.value)
         Error(_) -> exp

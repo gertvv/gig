@@ -35,7 +35,8 @@ pub fn module_headers(c: core.Module) {
           )
         external
       })
-    let module = mono.init_context(c)
+    let module = todo
+    // mono.init_context(c)
     let module = mono.Context(..module, externals:)
 
     let header =

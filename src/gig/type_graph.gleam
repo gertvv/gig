@@ -1,6 +1,6 @@
-import gig/closure.{type CustomType, type Field, type Module, type Variant}
+import gig/closure.{type CustomType, type Module, type Variant}
 import gig/graph
-import gig/mono.{type_name}
+import gig/mono.{type Field, type_name}
 import gleam/list
 
 type Graph =

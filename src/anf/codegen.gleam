@@ -4,12 +4,10 @@ import anf/monadic_form
 import gleam/order
 import glexer
 
-import gig/closure.{
-  type CustomType, type Field, type Function, type Module, type Variant,
-}
+import gig/closure.{type CustomType, type Function, type Module, type Variant}
 import gig/core
 import gig/graph
-import gig/mono
+import gig/mono.{type Field}
 import gig/type_graph
 
 import gleam/int
@@ -194,7 +192,11 @@ fn generate_literal(lit: core.LiteralKind) -> String {
   }
 }
 
-fn function_type_cast(fun: String, args: List(String), return: String) -> String {
+fn function_type_cast(
+  fun: String,
+  args: List(String),
+  return: String,
+) -> String {
   "((" <> return <> " (*)(" <> string.join(args, ", ") <> "))" <> fun <> ")"
 }
 

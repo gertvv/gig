@@ -1,6 +1,7 @@
 import anf/codegen
 import gig/closure
 import gig/core
+import gig/core_closure
 import gig/headers
 import gig/mono
 import gig/patch
@@ -117,13 +118,19 @@ pub fn compile(gleam_file_name: String, options: CompileOptions) {
       module_id,
     )
 
-  let core =
-    core.lower_modules(dict.map_values(typed, fn(_, p) { p.0 }))
-    |> core.merge_modules
+  let modules = core.lower_modules(dict.map_values(typed, fn(_, p) { p.0 }))
 
   case options.headers {
-    True -> generate_headers_only(core, sources)
-    False -> compile_to_binary(core, sources, module_id, target_path, options)
+    True ->
+      generate_headers_only(core.merge_modules(module_id, modules), sources)
+    False ->
+      compile_to_binary(
+        dict.values(modules),
+        sources,
+        module_id,
+        target_path,
+        options,
+      )
   }
 }
 
@@ -155,7 +162,7 @@ fn generate_headers_only(
 }
 
 fn compile_to_binary(
-  core: core.Module,
+  modules: List(core.Module),
   sources: dict.Dict(String, String),
   module_id: String,
   target_path: String,
@@ -165,7 +172,16 @@ fn compile_to_binary(
   let c_file = target_path <> module_id <> ".c"
   io.println("Generating ./" <> c_file)
 
-  let #(mono, main_name) = mono.run(core, module_id <> "_" <> "main")
+  // this identifies, creates, and explicitly binds, closures
+  // this is the IR that could be serialized on a per-module basis
+  // it is also intended to be "back-end neutral"
+  let modules = list.map(modules, core_closure.lower_module)
+
+  // monomorphize, this is still intended to be "back-end neutral"
+  // but by nature, it needs all the (relevant/reachable) modules
+  let #(mono, main_name) = mono.run(modules, module_id <> "_" <> "main")
+
+  // then, back-end specific steps
   let cc = closure.cc_module(mono)
   let code = codegen.compile_module(cc)
 
