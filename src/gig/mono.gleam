@@ -11,17 +11,14 @@ import gleam/string
 pub type Context {
   Context(
     in_types: dict.Dict(String, t.CustomType),
-    in_functions: dict.Dict(String, u.Function),
-    in_closures: dict.Dict(String, u.Closure),
+    in_functions: dict.Dict(String, u.Closure),
     in_externals: dict.Dict(String, t.External),
     in_constants: dict.Dict(String, u.Constant),
     types: List(CustomType),
-    functions: List(Function),
-    closures: List(Closure),
+    functions: List(Closure),
     externals: List(External),
     used_types: set.Set(String),
     used_functions: set.Set(String),
-    used_closures: set.Set(String),
     used_externals: set.Set(String),
     used_modules: set.Set(String),
     used_builtin: set.Set(String),
@@ -66,10 +63,6 @@ pub type Field {
   Field(name: String, typ: Type)
 }
 
-pub type Function {
-  Function(name: String, parameters: List(Field), return: Type, body: Exp)
-}
-
 pub type Closure {
   Closure(
     name: String,
@@ -109,8 +102,6 @@ pub fn init_context(in: u.Module) -> Context {
     list.fold(in.types, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
   let in_functions =
     list.fold(in.functions, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
-  let in_closures =
-    list.fold(in.closures, dict.new(), fn(d, i) { dict.insert(d, i.id, i) })
   let in_externals =
     list.fold(in.externals, dict.new(), fn(d, i) {
       dict.insert(d, i.internal_name, i)
@@ -120,16 +111,13 @@ pub fn init_context(in: u.Module) -> Context {
   Context(
     in_types:,
     in_functions:,
-    in_closures:,
     in_externals:,
     in_constants:,
     types: [],
     functions: [],
-    closures: [],
     externals: [],
     used_types: set.new(),
     used_functions: set.new(),
-    used_closures: set.new(),
     used_externals: set.new(),
     used_modules: set.new(),
     used_builtin: set.new(),
@@ -172,7 +160,6 @@ fn merge_modules(in: List(u.Module)) -> u.Module {
       types: [],
       functions: [],
       externals: [],
-      closures: [],
       constants: [],
     ),
     fn(a, b) {
@@ -181,7 +168,6 @@ fn merge_modules(in: List(u.Module)) -> u.Module {
         types: list.append(a.types, b.types),
         functions: list.append(a.functions, b.functions),
         externals: list.append(a.externals, b.externals),
-        closures: list.append(a.closures, b.closures),
         constants: list.append(a.constants, b.constants),
       )
     },
@@ -348,44 +334,6 @@ fn instantiate_function(
                 let typ = sub_type(sub, p.typ)
                 Field(p.name, typ)
               })
-            let assert FunctionType(_, ret) = mono
-            let fun =
-              Function(
-                name: mono_name,
-                parameters: params,
-                return: ret,
-                body: mono_body,
-              )
-
-            // add to module
-            let functions = [fun, ..c.functions]
-            let c = Context(..c, functions:)
-
-            #(c, mono_name)
-          }
-        }
-      })
-    }
-    |> result.lazy_or(fn() {
-      dict.get(c.in_closures, name)
-      |> result.map(fn(fun) {
-        let sub = unify_poly(c, fun.typ, mono)
-        let type_string = get_type_string(sub)
-        let mono_name = fun.id <> type_string
-
-        case set.contains(c.used_closures, mono_name) {
-          True -> #(c, mono_name)
-          False -> {
-            let used_closures = set.insert(c.used_closures, mono_name)
-            let c = Context(..c, used_closures:)
-
-            // instantiate function
-            let #(c, mono_body) = typed_to_mono_exp(c, sub, fun.body)
-            let params =
-              list.map(fun.parameters, fn(p) {
-                let typ = sub_type(sub, p.typ)
-                Field(p.name, typ)
-              })
             let environment =
               list.map(fun.environment, fn(p) {
                 let typ = sub_type(sub, p.typ)
@@ -401,15 +349,12 @@ fn instantiate_function(
                 body: mono_body,
               )
 
-            // add to module
-            let closures = [fun, ..c.closures]
-            let c = Context(..c, closures:)
-
+            let c = Context(..c, functions: [fun, ..c.functions])
             #(c, mono_name)
           }
         }
       })
-    })
+    }
     |> result.lazy_or(fn() {
       dict.get(c.in_externals, name)
       |> result.map(fn(external) {

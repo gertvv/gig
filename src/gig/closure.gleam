@@ -60,20 +60,7 @@ pub fn cc_module(mod: mono.Context) {
   let c = CC(Module([], [], [], mod.used_builtin), 1)
 
   let c =
-    list.fold(mod.functions, c, fn(c, fun) {
-      let #(c, e) = cc(c, fun.body)
-
-      let parameters =
-        list.map(fun.parameters, fn(x) { mono.Field(x.name, x.typ) })
-
-      let function = Function(fun.name, parameters, fun.return, e)
-
-      let mod = Module(..c.mod, functions: [function, ..c.mod.functions])
-      CC(..c, mod: mod)
-    })
-
-  let c =
-    list.fold(mod.closures, c, fn(c, closure) {
+    list.fold(mod.functions, c, fn(c, closure) {
       let mono.Closure(name: id, environment:, parameters:, return:, body:) =
         closure
       let name = id

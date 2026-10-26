@@ -13,25 +13,15 @@ pub type Module {
   Module(
     name: String,
     types: List(core.CustomType),
-    functions: List(Function),
+    functions: List(Closure),
     externals: List(core.External),
-    closures: List(Closure),
     constants: List(Constant),
-  )
-}
-
-pub type Function {
-  Function(
-    typ: core.Poly,
-    id: String,
-    parameters: List(core.Parameter),
-    body: Expr,
   )
 }
 
 /// A closure takes additional parameters via its environment.
 /// In this representation, we pretend these are just automatically available,
-/// no upacking is done.
+/// no upacking code is added to the body.
 pub type Closure {
   Closure(
     /// The closure's "virtual type" - i.e. the type of function it appears as
@@ -72,7 +62,6 @@ pub fn lower_module(module: core.Module) -> Module {
       types: module.types,
       externals: module.externals,
       functions: [],
-      closures: [],
       constants: [],
     )
   let acc = list.fold(module.functions, acc, lower_function)
@@ -80,14 +69,16 @@ pub fn lower_module(module: core.Module) -> Module {
 }
 
 fn lower_function(module: Module, function: core.Function) -> Module {
-  let #(module, expr) = lower_expr(module, function.body)
-  let function = Function(function.typ, function.id, function.parameters, expr)
+  let core.Function(typ:, id:, parameters:, body:) = function
+  let #(module, body) = lower_expr(module, body)
+  let function = Closure(typ:, id:, environment: [], parameters:, body:)
   Module(..module, functions: [function, ..module.functions])
 }
 
 fn lower_constant(module: Module, constant: core.Constant) -> Module {
-  let #(module, expr) = lower_expr(module, constant.value)
-  let constant = Constant(constant.typ, constant.id, expr)
+  let core.Constant(typ:, id:, value:) = constant
+  let #(module, value) = lower_expr(module, value)
+  let constant = Constant(typ:, id:, value:)
   Module(..module, constants: [constant, ..module.constants])
 }
 
@@ -158,11 +149,12 @@ fn lower_fn(
 
   let #(module, body) = lower_expr(module, body)
 
+  // TODO: is it worth making the IDs contiguous?
   let id =
     "Closure_"
     <> gen_names.get_id(
       module.name,
-      int.to_string(list.length(module.closures)),
+      int.to_string(list.length(module.functions)),
     )
 
   let closure =
@@ -174,7 +166,7 @@ fn lower_fn(
       body:,
     )
 
-  let module = Module(..module, closures: [closure, ..module.closures])
+  let module = Module(..module, functions: [closure, ..module.functions])
 
   let expr =
     BindClosure(
