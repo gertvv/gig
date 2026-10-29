@@ -128,6 +128,8 @@ type Context {
   )
 }
 
+/// TODO: remove the need for this function, replace it by an interface function
+/// (it isn't needed if we work on modules in the right order)
 pub fn lower_module_interface(interface: t.ModuleInterface) {
   ModuleInterface(
     types: list.map(interface.custom_types, lower_custom_type(interface.name, _)),
@@ -155,6 +157,7 @@ fn lower_constant_declaration(module_name: String, c: t.ConstantDeclaration) {
   ConstantDeclaration(typ:, id:)
 }
 
+/// TODO: remove this function. Instead, lower_module should be called in import graph order.
 pub fn lower_modules(modules: dict.Dict(String, t.Module)) -> List(Module) {
   let interfaces =
     dict.map_values(modules, fn(_, module) {
