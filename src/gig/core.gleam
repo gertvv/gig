@@ -172,7 +172,7 @@ pub fn lower_modules(modules: dict.Dict(String, t.Module)) -> List(Module) {
   })
 }
 
-fn lower_module(
+pub fn lower_module(
   interfaces: dict.Dict(String, ModuleInterface),
   module: t.Module,
 ) {

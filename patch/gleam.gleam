@@ -191,6 +191,7 @@ pub fn length_bit_array(a: BitArray) -> Int
 @external(c, "", "panic_exit")
 pub fn panic_exit(message: String) -> a
 
+@builtin
 @external(c, "", "print_string")
 pub fn print_string(message: String) -> Nil
 

@@ -79,6 +79,7 @@ pub type FieldAccessKind {
   TaggedUnionAccess
 }
 
+// TODO: why not make these direct expression types?
 pub type Op {
   FieldAccess(kind: FieldAccessKind, variant: String, field: String)
   VariantCheck(variant: String)
@@ -90,8 +91,8 @@ pub type Exp {
   ConstantGlobal(typ: Type, id: String)
   CallGlobal(typ: Type, id: String, args: List(Exp))
   BindClosure(typ: Type, id: String, environment: List(Exp))
-  CallClosure(typ: Type, fun: Exp, arg: List(Exp))
-  Op(typ: Type, op: Op, arg: List(Exp))
+  CallClosure(typ: Type, fun: Exp, args: List(Exp))
+  Op(typ: Type, op: Op, args: List(Exp))
   Let(typ: Type, var: String, val: Exp, exp: Exp)
   If(typ: Type, cond: Exp, then_exp: Exp, else_exp: Exp)
   Panic(typ: Type, value: Exp)
